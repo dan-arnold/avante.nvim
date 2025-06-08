@@ -737,47 +737,6 @@ function M._stream(opts)
         if is_break then break end
         ::continue::
       end
-      if stop_opts.reason == "complete" and Config.mode == "agentic" then
-        if #partial_tool_use_list == 0 then
-          local completed_attempt_completion_tool_use = nil
-          for idx = #history_messages, 1, -1 do
-            local message = history_messages[idx]
-            Utils.debug("completion_attempt, idx = " .. idx .. ", message = " .. message.message.content)
-            if message.is_user_submission then break end
-            if not Utils.is_tool_use_message(message) then goto continue end
-            if message.message.content[1].name ~= "attempt_completion" then break end
-            Utils.debug("setting completed_attempt_completion_tool_use, idx = " .. idx)
-            completed_attempt_completion_tool_use = message
-            if message then break end
-            ::continue::
-          end
-          local user_reminder_count = opts.session_ctx.user_reminder_count or 0
-          if not completed_attempt_completion_tool_use and opts.on_messages_add and user_reminder_count < 3 then
-            Utils.debug("adding user-reminder")
-            opts.session_ctx.user_reminder_count = user_reminder_count + 1
-            local message = HistoryMessage:new({
-              role = "assistant",
-              content = "<user-reminder>You should use tool calls to answer the question, for example, use attempt_completion if the job is done.</user-reminder>",
-            }, {
-              visible = false,
-            })
-            opts.on_messages_add({ message })
-            local new_opts = vim.tbl_deep_extend("force", opts, {
-              history_messages = opts.get_history_messages(),
-            })
-            if provider.get_rate_limit_sleep_time then
-              local sleep_time = provider:get_rate_limit_sleep_time(resp_headers)
-              if sleep_time and sleep_time > 0 then
-                Utils.info("Rate limit reached. Sleeping for " .. sleep_time .. " seconds ...")
-                vim.defer_fn(function() M._stream(new_opts) end, sleep_time * 1000)
-                return
-              end
-            end
-            M._stream(new_opts)
-            return
-          end
-        end
-      end
       if stop_opts.reason == "tool_use" then
         return handle_next_tool_use(partial_tool_use_list, 1, {}, stop_opts.streaming_tool_use)
       end
