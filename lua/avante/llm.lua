@@ -753,15 +753,15 @@ function M._stream(opts)
           if not completed_attempt_completion_tool_use and opts.on_messages_add and user_reminder_count < 3 then
             opts.session_ctx.user_reminder_count = user_reminder_count + 1
             local message = HistoryMessage:new({
-              role = "user",
+              role = "assistant",
               content = "<user-reminder>You should use tool calls to answer the question, for example, use attempt_completion if the job is done.</user-reminder>",
             }, {
               visible = false,
             })
+            opts.on_messages_add({ message })
             local new_opts = vim.tbl_deep_extend("force", opts, {
               history_messages = opts.get_history_messages(),
             })
-            opts.on_messages_add({ message })
             if provider.get_rate_limit_sleep_time then
               local sleep_time = provider:get_rate_limit_sleep_time(resp_headers)
               if sleep_time and sleep_time > 0 then
