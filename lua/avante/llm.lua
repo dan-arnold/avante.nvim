@@ -742,11 +742,11 @@ function M._stream(opts)
           local completed_attempt_completion_tool_use = nil
           for idx = #history_messages, 1, -1 do
             local message = history_messages[idx]
-            Utils.debug("completion_attempt, idx = " .. idx .. ", message = " .. message)
+            Utils.debug("completion_attempt, idx = " .. idx .. ", message = " .. message.message.content)
             if message.is_user_submission then break end
             if not Utils.is_tool_use_message(message) then goto continue end
             if message.message.content[1].name ~= "attempt_completion" then break end
-            Utils.debug("setting completed_attempt_completion_tool_use, idx = " .. idx .. ", message = " .. message)
+            Utils.debug("setting completed_attempt_completion_tool_use, idx = " .. idx)
             completed_attempt_completion_tool_use = message
             if message then break end
             ::continue::
