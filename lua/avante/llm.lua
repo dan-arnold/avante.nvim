@@ -742,15 +742,18 @@ function M._stream(opts)
           local completed_attempt_completion_tool_use = nil
           for idx = #history_messages, 1, -1 do
             local message = history_messages[idx]
+            Utils.debug("completion_attempt, idx = " .. idx .. ", message = " .. message)
             if message.is_user_submission then break end
             if not Utils.is_tool_use_message(message) then goto continue end
             if message.message.content[1].name ~= "attempt_completion" then break end
+            Utils.debug("setting completed_attempt_completion_tool_use, idx = " .. idx .. ", message = " .. message)
             completed_attempt_completion_tool_use = message
             if message then break end
             ::continue::
           end
           local user_reminder_count = opts.session_ctx.user_reminder_count or 0
           if not completed_attempt_completion_tool_use and opts.on_messages_add and user_reminder_count < 3 then
+            Utils.debug("adding user-reminder")
             opts.session_ctx.user_reminder_count = user_reminder_count + 1
             local message = HistoryMessage:new({
               role = "assistant",
