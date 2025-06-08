@@ -758,10 +758,10 @@ function M._stream(opts)
             }, {
               visible = false,
             })
-            opts.on_messages_add({ message })
             local new_opts = vim.tbl_deep_extend("force", opts, {
               history_messages = opts.get_history_messages(),
             })
+            opts.on_messages_add({ message })
             if provider.get_rate_limit_sleep_time then
               local sleep_time = provider:get_rate_limit_sleep_time(resp_headers)
               if sleep_time and sleep_time > 0 then
