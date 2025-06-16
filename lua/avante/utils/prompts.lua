@@ -32,7 +32,7 @@ I have completed the task...
 </result>
 </attempt_completion>
 
-ALWAYS ADHERE TO this format for the tool use to ensure proper parsing and execution.
+ALWAYS ADHERE TO this format for the tool use to ensure proper parsing and execution. YOU MUST NOT WRAP THE TOOL CALL IN A CODE BLOCK.
 
 # Tools
 
