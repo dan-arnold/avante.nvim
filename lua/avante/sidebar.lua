@@ -187,6 +187,7 @@ function Sidebar:setup_colors()
         ::continue::
       end
       self:set_code_winhl()
+      self:adjust_layout()
     end,
   })
 end
@@ -1017,7 +1018,7 @@ function Sidebar:render_selected_code()
   if not Utils.is_valid_container(self.selected_code_container) then return end
 
   local selected_code_lines_count = 0
-  local selected_code_max_lines_count = 12
+  local selected_code_max_lines_count = 5
 
   if self.code.selection ~= nil then
     local selected_code_lines = vim.split(self.code.selection.content, "\n")
@@ -1436,7 +1437,9 @@ function Sidebar:initialize()
   Utils.debug("Sidebar:initialize adding buffer to file selector", buf_path)
 
   self.file_selector:reset()
-  self.file_selector:add_selected_file(filepath)
+
+  local stat = vim.uv.fs_stat(filepath)
+  if stat == nil or stat.type == "file" then self.file_selector:add_selected_file(filepath) end
 
   self:reload_chat_history()
 
@@ -1613,6 +1616,7 @@ local function calculate_config_window_position()
     end
   end
 
+  ---@cast position -"smart", -string
   return position
 end
 
@@ -2033,7 +2037,7 @@ function Sidebar:create_selected_code_container()
     self.selected_code_container = nil
   end
 
-  local selected_code_size = self:get_selected_code_size()
+  local height = self:get_selected_code_container_height()
 
   if self.code.selection ~= nil then
     self.selected_code_container = Split({
@@ -2045,17 +2049,11 @@ function Sidebar:create_selected_code_container()
       buf_options = buf_options,
       win_options = vim.tbl_deep_extend("force", base_win_options, {}),
       size = {
-        height = selected_code_size + 3,
+        height = height,
       },
       position = "top",
     })
     self.selected_code_container:mount()
-    if self:get_layout() == "horizontal" then
-      api.nvim_win_set_height(
-        self.result_container.winid,
-        api.nvim_win_get_height(self.result_container.winid) - selected_code_size - 3
-      )
-    end
     self:adjust_layout()
   end
 end
@@ -2178,6 +2176,16 @@ function Sidebar:get_history_messages_for_api(opts)
 
   if opts.all then return history_messages0 end
 
+  if self.chat_history and self.chat_history.memory then
+    local picked_messages = {}
+    for idx = #history_messages0, 1, -1 do
+      local message = history_messages0[idx]
+      if message.uuid == self.chat_history.memory.last_message_uuid then break end
+      table.insert(picked_messages, 1, message)
+    end
+    history_messages0 = picked_messages
+  end
+
   local tool_id_to_tool_name = {}
   local tool_id_to_path = {}
   local tool_id_to_start_line = {}
@@ -2192,11 +2200,20 @@ function Sidebar:get_history_messages_for_api(opts)
       local tool_use_message = Utils.get_tool_use_message(message, history_messages0)
       local is_edit_func_call, _, _, path = Utils.is_edit_func_call_message(tool_use_message)
 
-      if is_edit_func_call and message.message.content[1].is_error then
-        failed_edit_tool_ids[message.message.content[1].tool_use_id] = true
+      local tool_result = message.message.content[1]
+
+      -- Only track as failed if it's an error AND not user-declined
+      if is_edit_func_call and tool_result.is_error and not tool_result.is_user_declined then
+        failed_edit_tool_ids[tool_result.tool_use_id] = true
       end
 
-      if is_edit_func_call and path and not message.message.content[1].is_error then
+      -- Only track as successful modification if not an error AND not user-declined
+      if
+        is_edit_func_call
+        and path
+        and not message.message.content[1].is_error
+        and not message.message.content[1].is_user_declined
+      then
         local uniformed_path = Utils.uniform_path(path)
         last_modified_files[uniformed_path] = idx
       end
@@ -2257,6 +2274,7 @@ function Sidebar:get_history_messages_for_api(opts)
                 tool_use_id = view_tool_use_id,
                 content = view_result,
                 is_error = view_error ~= nil,
+                is_user_declined = false,
               },
             },
           }, {
@@ -2296,6 +2314,7 @@ function Sidebar:get_history_messages_for_api(opts)
                   tool_use_id = get_diagnostics_tool_use_id,
                   content = vim.json.encode(diagnostics),
                   is_error = false,
+                  is_user_declined = false,
                 },
               },
             }, {
@@ -2710,11 +2729,11 @@ function Sidebar:create_input_container()
       height = Config.windows.input.height,
     } end
 
-    local selected_code_size = self:get_selected_code_size()
+    local selected_code_container_height = self:get_selected_code_container_height()
 
     return {
       width = "40%",
-      height = math.max(1, api.nvim_win_get_height(self.result_container.winid) - selected_code_size),
+      height = math.max(1, api.nvim_win_get_height(self.result_container.winid) - selected_code_container_height),
     }
   end
 
@@ -2886,30 +2905,18 @@ function Sidebar:get_input_value()
   return table.concat(lines, "\n")
 end
 
-function Sidebar:get_selected_code_size()
-  local selected_code_max_lines_count = 10
+function Sidebar:get_selected_code_container_height()
+  local selected_code_max_lines_count = 5
 
   local selected_code_size = 0
 
   if self.code.selection ~= nil then
     local selected_code_lines = vim.split(self.code.selection.content, "\n")
-    local selected_code_lines_count = #selected_code_lines
+    local selected_code_lines_count = #selected_code_lines + 1
     selected_code_size = math.min(selected_code_lines_count, selected_code_max_lines_count)
   end
 
   return selected_code_size
-end
-
-function Sidebar:get_selected_files_size()
-  if not self.file_selector then return 0 end
-
-  local selected_files_max_lines_count = 10
-
-  local selected_filepaths = self.file_selector:get_selected_filepaths()
-  local selected_files_size = #selected_filepaths
-  selected_files_size = math.min(selected_files_size, selected_files_max_lines_count)
-
-  return selected_files_size
 end
 
 function Sidebar:get_todos_container_height()
@@ -2919,15 +2926,19 @@ function Sidebar:get_todos_container_height()
 end
 
 function Sidebar:get_result_container_height()
-  local todos_height = self:get_todos_container_height()
-  local selected_code_size = self:get_selected_code_size()
-  local selected_files_size = self:get_selected_files_size()
+  local todos_container_height = self:get_todos_container_height()
+  local selected_code_container_height = self:get_selected_code_container_height()
+  local selected_files_container_height = self:get_selected_files_container_height()
 
   if self:get_layout() == "horizontal" then return math.floor(Config.windows.height / 100 * vim.o.lines) end
 
   return math.max(
     1,
-    api.nvim_win_get_height(self.code.winid) - selected_files_size - selected_code_size - todos_height - 3 - 8
+    api.nvim_win_get_height(self.code.winid)
+      - selected_files_container_height
+      - selected_code_container_height
+      - todos_container_height
+      - 6
   )
 end
 
@@ -2938,8 +2949,10 @@ function Sidebar:get_result_container_width()
 end
 
 function Sidebar:adjust_result_container_layout()
+  local width = self:get_result_container_width()
   local height = self:get_result_container_height()
 
+  api.nvim_win_set_width(self.result_container.winid, width)
   api.nvim_win_set_height(self.result_container.winid, height)
 end
 
@@ -3024,6 +3037,13 @@ function Sidebar:adjust_selected_files_container_layout()
   api.nvim_win_set_height(self.selected_files_container.winid, win_height)
 end
 
+function Sidebar:adjust_selected_code_container_layout()
+  if not Utils.is_valid_container(self.selected_code_container, true) then return end
+
+  local win_height = self:get_selected_code_container_height()
+  api.nvim_win_set_height(self.selected_code_container.winid, win_height)
+end
+
 function Sidebar:adjust_todos_container_layout()
   if not Utils.is_valid_container(self.todos_container, true) then return end
 
@@ -3088,13 +3108,16 @@ function Sidebar:create_selected_files_container()
     local lines_to_set = {}
     local highlights_to_apply = {}
 
+    local project_path = Utils.root.get()
     for i, filepath in ipairs(selected_filepaths_) do
       local icon, hl = Utils.file.get_file_icon(filepath)
-      local formatted_line = string.format("%s %s", icon, filepath)
+      local renderpath = PPath:new(filepath):normalize(project_path)
+      local formatted_line = string.format("%s %s", icon, renderpath)
       table.insert(lines_to_set, formatted_line)
       if hl and hl ~= "" then table.insert(highlights_to_apply, { line_nr = i, icon = icon, hl = hl }) end
     end
 
+    local selected_files_count = #lines_to_set ---@type integer
     local selected_files_buf = api.nvim_win_get_buf(self.selected_files_container.winid)
     Utils.unlock_buf(selected_files_buf)
     api.nvim_buf_clear_namespace(selected_files_buf, SELECTED_FILES_ICON_NAMESPACE, 0, -1)
@@ -3116,7 +3139,12 @@ function Sidebar:create_selected_files_container()
     self:render_header(
       self.selected_files_container.winid,
       selected_files_buf,
-      Utils.icon(" ") .. "Selected Files",
+      string.format(
+        "%sSelected (%d file%s)",
+        Utils.icon(" "),
+        selected_files_count,
+        selected_files_count > 1 and "s" or ""
+      ),
       Highlights.SUBTITLE,
       Highlights.REVERSED_SUBTITLE
     )
@@ -3227,6 +3255,7 @@ end
 function Sidebar:adjust_layout()
   self:adjust_result_container_layout()
   self:adjust_todos_container_layout()
+  self:adjust_selected_code_container_layout()
   self:adjust_selected_files_container_layout()
 end
 

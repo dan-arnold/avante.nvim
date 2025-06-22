@@ -6,6 +6,7 @@ local lsp = vim.lsp
 ---@field tokens avante.utils.tokens
 ---@field root avante.utils.root
 ---@field file avante.utils.file
+---@field path avante.utils.path
 ---@field environment avante.utils.environment
 ---@field lsp avante.utils.lsp
 local M = {}
@@ -32,20 +33,9 @@ function M.has(plugin)
   return res
 end
 
-local _is_win = nil
+function M.is_win() return M.path.is_win() end
 
-function M.is_win()
-  if _is_win == nil then _is_win = jit.os:find("Windows") ~= nil end
-  return _is_win
-end
-
-M.path_sep = (function()
-  if M.is_win() then
-    return "\\"
-  else
-    return "/"
-  end
-end)()
+M.path_sep = M.path.SEP
 
 ---@return "linux" | "darwin" | "windows"
 function M.get_os_name()
@@ -340,7 +330,7 @@ end
 
 ---@param path string
 ---@return string
-function M.norm(path) return vim.fs.normalize(path) end
+function M.norm(path) return M.path.normalize(path) end
 
 ---@param msg string|string[]
 ---@param opts? LazyNotifyOpts
@@ -900,25 +890,14 @@ function M.get_parent_path(filepath)
   return res
 end
 
-function M.make_relative_path(filepath, base_dir)
-  if filepath:sub(-2) == M.path_sep .. "." then filepath = filepath:sub(1, -3) end
-  if base_dir:sub(-2) == M.path_sep .. "." then base_dir = base_dir:sub(1, -3) end
-  if filepath == base_dir then return "." end
-  if filepath:sub(1, #base_dir) == base_dir then
-    filepath = filepath:sub(#base_dir + 1)
-    if filepath:sub(1, 2) == "." .. M.path_sep then
-      filepath = filepath:sub(3)
-    elseif filepath:sub(1, 1) == M.path_sep then
-      filepath = filepath:sub(2)
-    end
-  end
-  return filepath
-end
+function M.make_relative_path(filepath, base_dir) return M.path.relative(base_dir, filepath, false) end
 
-function M.is_absolute_path(path)
-  if not path then return false end
-  if M.is_win() then return path:match("^%a:[/\\]") ~= nil end
-  return path:match("^/") ~= nil
+function M.is_absolute_path(path) return M.path.is_absolute(path) end
+
+function M.to_absolute_path(path)
+  if not path or path == "" then return path end
+  if path:sub(1, 1) == "/" or path:sub(1, 7) == "term://" then return path end
+  return M.join_paths(M.get_project_root(), path)
 end
 
 function M.join_paths(...)
@@ -933,16 +912,13 @@ function M.join_paths(...)
       goto continue
     end
 
-    if path:sub(1, 2) == "." .. M.path_sep then path = path:sub(3) end
-
-    if result ~= "" and result:sub(-1) ~= M.path_sep then result = result .. M.path_sep end
-    result = result .. path
+    result = result == "" and path or M.path.join(result, path)
     ::continue::
   end
   return M.norm(result)
 end
 
-function M.path_exists(path) return vim.loop.fs_stat(path) ~= nil end
+function M.path_exists(path) return M.path.is_exist(path) end
 
 function M.is_first_letter_uppercase(str) return string.match(str, "^[A-Z]") ~= nil end
 
@@ -1009,6 +985,19 @@ function M.get_chat_mentions()
   return mentions
 end
 
+local function safe_open_file(filename)
+  local ok, _ = pcall(function() vim.cmd("noautocmd edit " .. filename) end)
+  if ok then
+    -- Manually trigger necessary events
+    vim.cmd("doautocmd BufRead")
+  else
+    -- Fallback solution
+    vim.cmd("enew")
+    vim.api.nvim_buf_set_name(0, filename)
+    vim.bo.filetype = vim.fn.fnamemodify(filename, ":e")
+  end
+end
+
 ---@param path string
 ---@param set_current_buf? boolean
 ---@return integer bufnr
@@ -1017,10 +1006,14 @@ function M.open_buffer(path, set_current_buf)
 
   local abs_path = M.join_paths(M.get_project_root(), path)
 
-  local bufnr = vim.fn.bufnr(abs_path, true)
-  vim.fn.bufload(bufnr)
-
-  if set_current_buf then vim.api.nvim_set_current_buf(bufnr) end
+  local bufnr
+  if set_current_buf then
+    safe_open_file(abs_path)
+    bufnr = vim.api.nvim_get_current_buf()
+  else
+    bufnr = vim.fn.bufnr(abs_path, true)
+    vim.fn.bufload(bufnr)
+  end
 
   vim.cmd("filetype detect")
 
