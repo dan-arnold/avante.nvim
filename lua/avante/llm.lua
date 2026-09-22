@@ -630,6 +630,11 @@ function M.curl(opts)
     vim.tbl_extend("force", curl_options, {
       dump = { "-D", headers_file },
       stream = function(err, data, _)
+        -- The request may still be delivering already-buffered chunks (or,
+        -- if the process could not be killed, still running) after the user
+        -- cancelled it. Drop anything that arrives past that point instead
+        -- of rendering it.
+        if completed then return end
         if not headers_reported and opts.on_response_headers then
           headers_reported = true
           opts.on_response_headers(parse_headers(headers_file))
@@ -650,6 +655,9 @@ function M.curl(opts)
           end
         end
         vim.schedule(function()
+          -- Re-check: `completed` may have flipped to true while this
+          -- closure was queued on the event loop.
+          if completed then return end
           if provider.parse_stream_data ~= nil then
             provider:parse_stream_data(turn_ctx, data, handler_opts)
           else
@@ -765,6 +773,20 @@ function M.curl(opts)
 
         -- 只有当 job 仍然活跃时才尝试关闭它
         if job_is_alive then
+          -- Job:shutdown() only closes plenary's local pipes/handles; it
+          -- never signals the underlying curl child process, which is
+          -- typically blocked in a network read and keeps streaming from
+          -- the server (up to the provider's full request timeout) after
+          -- shutdown() returns. Explicitly kill the process first so it
+          -- actually stops producing data.
+          local ok_pid, pid = pcall(function() return active_job:pid() end)
+          if ok_pid and pid then
+            xpcall(function() uv.kill(pid, "sigterm") end, function(err)
+              Utils.debug("Ignored error killing job process: " .. vim.inspect(err))
+              return err
+            end)
+          end
+
           -- Attempt to shutdown the active job, but ignore any errors
           xpcall(function() active_job:shutdown() end, function(err)
             Utils.debug("Ignored error during job shutdown: " .. vim.inspect(err))
