@@ -1811,9 +1811,13 @@ end
 
 ---@param opts AvanteLLMStreamOptions
 function M._stream(opts)
-  -- Reset the cancellation flag at the start of a new request
-  if LLMToolHelpers then LLMToolHelpers.is_cancelled = false end
-
+  -- NOTE: the cancellation flag is intentionally *not* reset here. M._stream
+  -- is called repeatedly for every internal round of the agent loop (after
+  -- each batch of tool_uses, on rate-limit retry, on memory compaction),
+  -- not just once per user submission. Resetting it on every round would
+  -- clobber a cancellation requested mid-loop as soon as the next round
+  -- starts. Only M.stream() (the true once-per-submission entry point)
+  -- resets it.
   local acp_provider = Config.acp_providers[Config.provider]
   if acp_provider then return M._stream_acp(opts) end
 
@@ -1877,6 +1881,12 @@ function M._stream(opts)
         tool_results,
         streaming_tool_use
       )
+        -- A cancellation may have arrived after the request that produced
+        -- these tool_uses already finished (e.g. mid tool-execution, or in
+        -- the gap between rounds). Without this check, the loop ignores it
+        -- and either runs the remaining tools or kicks off a brand new
+        -- M._stream() round that nothing here would ever cancel.
+        if LLMToolHelpers.is_cancelled then return dispatch_cancel_message() end
         if tool_use_index > #tool_uses then
           ---@type avante.HistoryMessage[]
           local messages = {}
@@ -1971,7 +1981,7 @@ function M._stream(opts)
         })
         if result ~= nil or error ~= nil then return handle_tool_result(result, error) end
       end
-      if stop_opts.reason == "cancelled" then dispatch_cancel_message() end
+      if stop_opts.reason == "cancelled" then return dispatch_cancel_message() end
       local history_messages = opts.get_history_messages and opts.get_history_messages({ all = true }) or {}
       local pending_tools, pending_tool_use_messages = History.get_pending_tools(history_messages)
       if stop_opts.reason == "complete" and Config.mode == "agentic" then
@@ -2228,6 +2238,12 @@ function M.stream(opts)
 
   opts.mode = opts.mode or Config.mode
 
+  -- Reset the cancellation flag here, once, for this new top-level user
+  -- submission. Internal continuation rounds (tool_use loop, rate-limit
+  -- retry, memory compaction) call M._stream()/M._dual_boost_stream()
+  -- directly and must not re-reset it, or a cancellation requested
+  -- mid-loop would be silently cleared by the very next round.
+  if LLMToolHelpers then LLMToolHelpers.is_cancelled = false end
   abort_retry_timer = false
   if Config.dual_boost.enabled and valid_dual_boost_modes[opts.mode] then
     M._dual_boost_stream(
