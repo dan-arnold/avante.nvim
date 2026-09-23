@@ -340,6 +340,42 @@ describe("llm_tools", function()
         end,
       })
     end)
+
+    -- Regression test: the tool validates `path` once, before the (async)
+    -- confirmation prompt, then reused that same path as cwd with no
+    -- re-check. If the directory was removed/replaced by a concurrent tool
+    -- call in that window, jobstart() raised an uncaught Lua error
+    -- (E475: Invalid argument: expected valid directory) instead of the
+    -- tool reporting a normal error.
+    it("should return an error instead of crashing when the directory is removed during confirmation", function()
+      local vanishing_dir = test_dir .. "/vanishing"
+      os.execute("mkdir -p " .. vanishing_dir)
+
+      local original_confirm = LlmToolHelpers.confirm
+      LlmToolHelpers.confirm = function(_msg, cb)
+        -- simulate a concurrent tool call removing the directory in the
+        -- window between the initial existence check and confirmation
+        os.execute("rm -rf " .. vanishing_dir)
+        return cb(true)
+      end
+
+      local called, result, err
+      bash({ path = "vanishing", command = "echo 'test'" }, {
+        session_ctx = {},
+        on_complete = function(res, e)
+          called = true
+          result = res
+          err = e
+        end,
+      })
+
+      LlmToolHelpers.confirm = original_confirm
+
+      assert.is_true(called)
+      assert.is_false(result)
+      assert.truthy(err)
+      assert.truthy(err:find("Path no longer exists"))
+    end)
   end)
 
   describe("python", function()

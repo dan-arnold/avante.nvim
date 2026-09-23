@@ -238,4 +238,39 @@ describe("Utils", function()
       assert.equals(3, end_line)
     end)
   end)
+
+  describe("shell_run_async", function()
+    it("should run a command in an existing cwd and report its output", function()
+      local called, output, code
+      Utils.shell_run_async("echo hi", "bash -c", function(out, exit_code)
+        called = true
+        output = out
+        code = exit_code
+      end, "/tmp")
+      vim.wait(2000, function() return called end)
+      assert.is_true(called)
+      assert.equals(0, code)
+      assert.truthy(output:find("hi"))
+    end)
+
+    -- Regression test: jobstart() raises a hard Lua error (rather than
+    -- returning an error code) when `cwd` is not a valid, existing
+    -- directory. This can legitimately happen when the directory is
+    -- removed/replaced (e.g. by a concurrent tool call) between the time a
+    -- caller validates the path and the time it actually starts the job.
+    -- shell_run_async must catch that and report it through on_complete
+    -- instead of letting it crash as an uncaught exception.
+    it("should report an error via on_complete instead of raising when cwd does not exist", function()
+      local called, output, code
+      Utils.shell_run_async("echo hi", "bash -c", function(out, exit_code)
+        called = true
+        output = out
+        code = exit_code
+      end, "/no/such/directory/at/all")
+      vim.wait(2000, function() return called end)
+      assert.is_true(called)
+      assert.are_not.equal(0, code)
+      assert.truthy(output:find("Failed to start command"))
+    end)
+  end)
 end)
