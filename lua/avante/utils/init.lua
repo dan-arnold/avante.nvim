@@ -149,8 +149,12 @@ function M.shell_run_async(input_cmd, shell_cmd, on_complete, cwd, timeout)
     on_complete(out, code)
   end
 
-  -- Start the job
-  local job_id = fn.jobstart(cmd, {
+  -- Start the job. jobstart() raises a hard Lua error (rather than returning
+  -- an error code) for invalid opts, e.g. a `cwd` that no longer exists
+  -- because it was removed after the caller validated it (TOCTOU). Guard
+  -- with pcall so that shows up as a normal tool error instead of an
+  -- uncaught exception.
+  local ok, job_id = pcall(fn.jobstart, cmd, {
     on_stdout = function(_, data)
       if not data then return end
       vim.list_extend(output, data)
@@ -162,6 +166,16 @@ function M.shell_run_async(input_cmd, shell_cmd, on_complete, cwd, timeout)
     on_exit = function(_, exit_code) complete_once(table.concat(output, "\n"), exit_code) end,
     cwd = cwd,
   })
+
+  if not ok then
+    complete_once("Failed to start command: " .. tostring(job_id), 1)
+    return
+  end
+
+  if job_id <= 0 then
+    complete_once("Failed to start command (jobstart returned " .. tostring(job_id) .. ")", 1)
+    return
+  end
 
   -- Set up timeout if specified
   if timeout and timeout > 0 then

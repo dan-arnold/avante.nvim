@@ -253,6 +253,13 @@ function M.func(input, opts)
         opts.on_complete(false, "User declined, reason: " .. (reason and reason or "unknown"))
         return
       end
+      -- re-check: abs_path was validated before the (async) confirmation prompt,
+      -- so it may have been removed/replaced in the meantime by a concurrent
+      -- tool call or external process.
+      if not Path:new(abs_path):exists() then
+        opts.on_complete(false, "Path no longer exists: " .. abs_path)
+        return
+      end
       Utils.shell_run_async(input.command, "bash -c", function(output, exit_code)
         local result, err = handle_result(output, exit_code)
         opts.on_complete(result, err)
