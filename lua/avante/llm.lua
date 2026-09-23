@@ -1986,6 +1986,13 @@ function M._stream(opts)
       local pending_tools, pending_tool_use_messages = History.get_pending_tools(history_messages)
       if stop_opts.reason == "complete" and Config.mode == "agentic" then
         local completed_attempt_completion_tool_use = nil
+        -- Whether the assistant already said something to the user this turn (e.g.
+        -- asked a clarifying question). If so, the turn must end and wait for a real
+        -- reply rather than being auto-nagged into continuing without one: the nag
+        -- message below is a synthetic "user" turn the model can't distinguish from
+        -- genuine input, so auto-continuing past real assistant speech risks the
+        -- model treating its own nagged continuation as tacit user approval.
+        local assistant_said_something = false
         for idx = #history_messages, 1, -1 do
           local message = history_messages[idx]
           if message.is_user_submission then break end
@@ -1993,6 +2000,9 @@ function M._stream(opts)
           if use and use.name == "attempt_completion" then
             completed_attempt_completion_tool_use = message
             break
+          end
+          if message.message.role == "assistant" and type(message.message.content) == "string" then
+            if vim.trim(message.message.content) ~= "" then assistant_said_something = true end
           end
         end
         local unfinished_todos = {}
@@ -2006,6 +2016,7 @@ function M._stream(opts)
         local user_reminder_count = opts.session_ctx.user_reminder_count or 0
         if
           not completed_attempt_completion_tool_use
+          and not assistant_said_something
           and opts.on_messages_add
           and (user_reminder_count < 3 or #unfinished_todos > 0)
         then

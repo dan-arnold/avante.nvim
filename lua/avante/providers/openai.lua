@@ -309,10 +309,20 @@ function M:parse_messages(opts)
             else
               -- Chat Completions API format
               local last_message = messages[#messages]
-              if last_message and last_message.role == self.role_map["assistant"] and last_message.tool_calls then
-                last_message.tool_calls = vim.list_extend(last_message.tool_calls, tool_calls)
+              if last_message and last_message.role == self.role_map["assistant"] then
+                -- Merge into the assistant message already emitted for this turn (its
+                -- text content, or a prior tool_calls batch) instead of appending a
+                -- second, adjacent assistant-role message. Two consecutive same-role
+                -- messages force the alternation-fixup below to fabricate a filler
+                -- turn (e.g. "Ok"), which a weaker model can mistake for real user
+                -- speech.
+                if last_message.tool_calls then
+                  last_message.tool_calls = vim.list_extend(last_message.tool_calls, tool_calls)
+                else
+                  last_message.tool_calls = tool_calls
+                end
 
-                last_message.reasoning_content = pending_reasoning_content or ""
+                last_message.reasoning_content = pending_reasoning_content or last_message.reasoning_content or ""
                 pending_reasoning_content = nil
 
                 if not last_message.content then last_message.content = "" end
