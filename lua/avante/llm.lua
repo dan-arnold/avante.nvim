@@ -40,7 +40,7 @@ function M.summarize_memory(prev_memory, history_messages, cb)
   local latest_message_uuid = nil
   for idx = #history_messages, 1, -1 do
     local message = history_messages[idx]
-    if not message.is_dummy then
+    if not message.is_dummy and not message.just_for_display then
       latest_timestamp = message.timestamp
       latest_message_uuid = message.uuid
       break
