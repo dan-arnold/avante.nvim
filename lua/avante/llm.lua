@@ -1861,6 +1861,26 @@ function M._stream(opts)
     return opts.on_stop({ reason = "cancelled" })
   end
 
+  -- Some models, given nothing left to do, respond by re-issuing the exact
+  -- same tool call instead of stopping (e.g. re-running a status check over
+  -- and over). Nothing here would otherwise interrupt that: the tool_use
+  -- branch below unconditionally executes the call and restarts M._stream(),
+  -- and it's a genuine call each time (not the hidden-reminder path), so it
+  -- keeps going indefinitely with no chance for the user to weigh in.
+  local function dispatch_stuck_loop_message(tool_name)
+    local stuck_text = "\n*[Stopped: the assistant repeated the same `"
+      .. tool_name
+      .. "` tool call several times in a row without making progress. Waiting for your input.]*\n"
+    if opts.on_chunk then opts.on_chunk(stuck_text) end
+    if opts.on_messages_add then
+      local message = History.Message:new("assistant", stuck_text, {
+        just_for_display = true,
+      })
+      opts.on_messages_add({ message })
+    end
+    return opts.on_stop({ reason = "complete" })
+  end
+
   ---@type AvanteHandlerOptions
   local handler_opts = {
     on_messages_add = opts.on_messages_add,
@@ -1969,6 +1989,19 @@ function M._stream(opts)
           return
         end
         if streaming_tool_use then return end
+
+        -- Loop-detection: if this exact tool call (same name + input) is
+        -- about to run for the 3rd time in a row within this task, stop
+        -- instead of executing it again. See dispatch_stuck_loop_message.
+        local tool_signature = partial_tool_use.name .. "\0" .. vim.json.encode(partial_tool_use.input or {})
+        if opts.session_ctx.last_tool_signature == tool_signature then
+          opts.session_ctx.repeated_tool_call_count = (opts.session_ctx.repeated_tool_call_count or 1) + 1
+        else
+          opts.session_ctx.last_tool_signature = tool_signature
+          opts.session_ctx.repeated_tool_call_count = 1
+        end
+        if opts.session_ctx.repeated_tool_call_count >= 3 then return dispatch_stuck_loop_message(partial_tool_use.name) end
+
         partial_tool_use_message.is_calling = true
         if opts.on_messages_add then opts.on_messages_add({ partial_tool_use_message }) end
         -- Either on_complete handles the tool result asynchronously or we receive the result and error synchronously when either is not nil
