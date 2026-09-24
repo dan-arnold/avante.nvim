@@ -2,18 +2,23 @@
 ---@brief [[
 ---
 --- The Retrieval-Augmented Generation (RAG) vante service provides additional project context for AI responses.
---- It is a python chromadb-based server supports several providers like openai, ollama and so on.
 --- When enabled, avante will automatically launch the service on your current project (It is disabled by default).
 --- The service will scan in the background your project such that you can query it later.
 ---
---- You can list the provider by running `avante-rag-service --help`.
+--- Three runners are supported:
+--- - "ragd": a standalone Rust daemon (https://github.com/dan-arnold/ragd), run as a native
+---   process on the host. This is the recommended runner on this fork -- see below.
+--- - "docker": the original Python/ChromaDB service, run in a container.
+--- - "nix": the original Python service, run via `nix build .#ragService` / `uv run`.
+---
 --- The service config
 --->
 ---   vim.g.avante = {
 ---     rag_service = {
 ---       enabled = false,
 ---       host_mount = os.getenv("HOME"),
----       runner = "docker",
+---       runner = "ragd",
+---       ragd_binary = "ragd", -- path to the ragd executable, if not on PATH
 ---       llm = {
 ---         provider = "openai",
 ---         endpoint = "https://api.openai.com/v1",
@@ -26,6 +31,7 @@
 ---         endpoint = "https://api.openai.com/v1",
 ---         api_key = "OPENAI_API_KEY",
 ---         model = "text-embedding-3-large",
+---         dimensions = 1536, -- required when runner = "ragd": the embedding model's vector width
 ---         extra = nil,
 ---       },
 ---       docker_extra_args = "",
@@ -33,18 +39,9 @@
 ---   })
 ---<
 ---
---- The RAG service lives in py/rag-service and be run via `uv run`.
---- `nix build .#ragService` will also give you the "avante-rag-service" executable.
+--- You can change the list of ignored files in the "$XDG_CONFIG_HOME/avante/rag-ignore" file
+--- (docker/nix runners only; ragd currently only respects .gitignore).
 ---
---- You can change the list of ignored files in the "$XDG_CONFIG_HOME/avante/rag-ignore" file.
----
---- OUTDATED DOCKER SPECIFIC COMMENTS:
---- there was a docker build that is now outdated. It could be fixed if someone needs it
---- The `host_mount` path is mounted read-only into the service container.
---- After changing RAG configuration, remove the old container so the new configuration is used:
---->
----   docker rm -fv avante-rag-service
----<
 ---Communication port is (for now) hardcoded to localhost:20250
 ---@brief ]]
 
@@ -227,6 +224,67 @@ function M.launch_rag_service(cb)
         end
       end,
     })
+  elseif M.get_rag_service_runner() == "ragd" then
+    if M.is_ready() then
+      cb()
+      return
+    end
+
+    local embed_dim = Config.rag_service.embed and Config.rag_service.embed.dimensions
+    if not embed_dim then
+      error("cannot launch ragd: Config.rag_service.embed.dimensions must be set to the embedding model's vector width")
+      return
+    end
+
+    local ragd_bin = Config.rag_service.ragd_binary or "ragd"
+    local data_path = M.get_data_path()
+    local args = {
+      ragd_bin,
+      "--data-dir",
+      tostring(data_path),
+      "--port",
+      tostring(port),
+      "--embed-endpoint",
+      Config.rag_service.embed.endpoint,
+      "--embed-api-key",
+      embed_api_key,
+      "--embed-model",
+      Config.rag_service.embed.model,
+      "--embed-dim",
+      tostring(embed_dim),
+      "--llm-endpoint",
+      Config.rag_service.llm.endpoint,
+      "--llm-api-key",
+      llm_api_key,
+      "--llm-model",
+      Config.rag_service.llm.model,
+    }
+    Utils.info("Starting ragd with: " .. table.concat(args, " "))
+    local ok, job_or_err = pcall(vim.system, args, {
+      detach = true,
+    }, function(res)
+      if res.code ~= 0 then
+        Utils.error(string.format("ragd exited with code %d: %s", res.code, res.stderr or ""))
+      end
+    end)
+    if not ok then
+      Utils.error("Could not launch 'ragd', make sure it is installed and on your PATH (or set rag_service.ragd_binary). Error:\n" .. tostring(job_or_err))
+      return
+    end
+
+    -- ragd needs a moment to bind its port before it's ready.
+    local attempts = 0
+    local function poll_ready()
+      attempts = attempts + 1
+      if M.is_ready() then
+        cb()
+      elseif attempts < 30 then
+        vim.defer_fn(poll_ready, 200)
+      else
+        Utils.error("ragd did not become ready in time")
+      end
+    end
+    vim.defer_fn(poll_ready, 200)
   elseif M.get_rag_service_runner() == "nix" then
     -- Check if service is already running
     -- check if there is a process having "service_path" in its invokation
@@ -281,6 +339,13 @@ function M.stop_rag_service()
     local cmd = { "docker", "inspect", "--format", "{{.State.Status}}", container_name }
     local result = vim.system(cmd, { text = true }):wait().stdout
     if result ~= "" then vim.system({ "docker", "rm", "-fv", container_name }):wait() end
+  elseif M.get_rag_service_runner() == "ragd" then
+    local data_path = tostring(M.get_data_path())
+    local pid = vim.system({ "pgrep", "-f", data_path }, { text = true }):wait().stdout
+    if pid ~= "" then
+      vim.system({ "kill", "-9", pid }):wait()
+      Utils.debug("Attempted to kill processes related to ragd")
+    end
   else
     local pid = vim.system({ "pgrep", "-f", service_path }, { text = true }):wait().stdout
     if pid ~= "" then
@@ -300,7 +365,7 @@ end
 ---Transforms URI when used with docker
 function M.to_container_uri(uri)
   local runner = M.get_rag_service_runner()
-  if runner == "nix" then return uri end
+  if runner == "nix" or runner == "ragd" then return uri end
   local scheme = M.get_scheme(uri)
   if scheme == "file" then
     local path = uri:match("^file://(.*)$")
@@ -324,15 +389,26 @@ function M.to_local_uri(uri)
   return uri
 end
 
----Checks http code when contacting server's /api/health
+---Checks http code when contacting the server's health endpoint
 ---@return boolean
 function M.is_ready()
+  local path = M.get_rag_service_runner() == "ragd" and "/health" or "/api/health"
   return vim
-    .system(
-      { "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", M.get_rag_service_url() .. "/api/health" },
-      { text = true }
-    )
+    .system({ "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", M.get_rag_service_url() .. path }, { text = true })
     :wait().code == 0
+end
+
+---Resolves a resource's `name` from its `uri` via the daemon's resource
+---listing. Needed because ragd's remove/query endpoints key on name, not uri.
+---@param uri string
+---@return string | nil
+local function resolve_resource_name(uri)
+  local resources_resp = M.get_resources()
+  if resources_resp == nil then return nil end
+  for _, resource in ipairs(resources_resp.resources) do
+    if resource.uri == uri then return resource.name end
+  end
+  return nil
 end
 
 ---@class AvanteRagServiceAddResourceResponse
@@ -377,7 +453,7 @@ function M.add_resource(uri)
     end
   end
   local payload = vim.json.encode({ name = resource_name, uri = uri })
-  local url = M.get_rag_service_url() .. "/api/v1/add_resource"
+  local url = M.get_rag_service_url() .. (M.get_rag_service_runner() == "ragd" and "/resources" or "/api/v1/add_resource")
 
   Utils.debug("Sending payload to " .. url .. ": %s", payload)
   local cmd = {
@@ -401,6 +477,25 @@ end
 
 function M.remove_resource(uri)
   uri = M.to_container_uri(uri)
+
+  if M.get_rag_service_runner() == "ragd" then
+    local name = resolve_resource_name(uri)
+    if name == nil then
+      Utils.error("failed to remove resource: not found for uri " .. uri)
+      return
+    end
+    local resp = curl.delete(M.get_rag_service_url() .. "/resources/" .. name, {
+      headers = {
+        ["Content-Type"] = "application/json",
+      },
+    })
+    if resp.status ~= 200 then
+      Utils.error("failed to remove resource: " .. resp.body)
+      return
+    end
+    return vim.json.decode(resp.body)
+  end
+
   local resp = curl.post(M.get_rag_service_url() .. "/api/v1/remove_resource", {
     headers = {
       ["Content-Type"] = "application/json",
@@ -429,6 +524,46 @@ end
 ---@param on_complete fun(resp: AvanteRagServiceRetrieveResponse | nil, error: string | nil): nil
 function M.retrieve(base_uri, query, on_complete)
   base_uri = M.to_container_uri(base_uri)
+
+  if M.get_rag_service_runner() == "ragd" then
+    local name = resolve_resource_name(base_uri)
+    if name == nil then
+      on_complete(nil, "resource not found for uri: " .. base_uri)
+      return
+    end
+    curl.post(M.get_rag_service_url() .. "/query", {
+      headers = {
+        ["Content-Type"] = "application/json",
+      },
+      body = vim.json.encode({
+        resource = name,
+        query = query,
+        top_k = 10,
+      }),
+      timeout = 100000,
+      callback = function(resp)
+        if resp.status ~= 200 then
+          Utils.error("failed to retrieve: " .. resp.body)
+          on_complete(nil, resp.body)
+          return
+        end
+        local jsn = vim.json.decode(resp.body)
+        -- Normalize to the same shape the docker/nix path returns.
+        jsn.response = jsn.answer
+        jsn.sources = vim
+          .iter(jsn.sources)
+          :map(function(source)
+            local uri = M.to_local_uri("file://" .. source.path)
+            return vim.tbl_deep_extend("force", source, { uri = uri })
+          end)
+          :totable()
+        Utils.debug("Sucessfully retrieved rag answer")
+        on_complete(jsn, nil)
+      end,
+    })
+    return
+  end
+
   curl.post(M.get_rag_service_url() .. "/api/v1/retrieve", {
     headers = {
       ["Content-Type"] = "application/json",
@@ -453,7 +588,7 @@ function M.retrieve(base_uri, query, on_complete)
           return vim.tbl_deep_extend("force", source, { uri = uri })
         end)
         :totable()
-      Utils.debug("Sucessfully retreived rag answer")
+      Utils.debug("Sucessfully retrieved rag answer")
       on_complete(jsn, nil)
     end,
   })
@@ -474,6 +609,27 @@ end
 ---@return AvanteRagServiceIndexingStatusResponse | nil
 function M.indexing_status(uri)
   uri = M.to_container_uri(uri)
+
+  if M.get_rag_service_runner() == "ragd" then
+    -- ragd doesn't expose a dedicated per-file status endpoint; approximate
+    -- from the resource listing (this function isn't currently called from
+    -- anywhere in avante -- kept for API parity/future use).
+    local resources_resp = M.get_resources()
+    if resources_resp == nil then return end
+    for _, resource in ipairs(resources_resp.resources) do
+      if resource.uri == uri then
+        return {
+          uri = resource.uri,
+          is_watched = resource.status == "active",
+          total_files = nil,
+          status_summary = { [resource.indexing_status] = 1 },
+        }
+      end
+    end
+    Utils.error("Failed to get indexing status: resource not found for uri " .. uri)
+    return
+  end
+
   local url = M.get_rag_service_url() .. "/api/v1/indexing_status"
   local resp = curl.post(url, {
     headers = {
@@ -509,7 +665,8 @@ end
 
 ---@return AvanteRagServiceResourceListResponse | nil
 function M.get_resources()
-  local resp = curl.get(M.get_rag_service_url() .. "/api/v1/resources", {
+  local path = M.get_rag_service_runner() == "ragd" and "/resources" or "/api/v1/resources"
+  local resp = curl.get(M.get_rag_service_url() .. path, {
     headers = {
       ["Content-Type"] = "application/json",
     },

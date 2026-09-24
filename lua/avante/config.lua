@@ -225,16 +225,18 @@ end
 ---@field prev_prompt? avante.Config.PromptLoggerKeymap Mapping used to load the previous older prompt log.
 
 ---@class avante.Config.RagServiceModel
----@field provider string Model provider. One available in py/rag-service/src/providers ie., "ollama", "openai", "dashscope", "openrouter"
+---@field provider string Model provider. One available in py/rag-service/src/providers ie., "ollama", "openai", "dashscope", "openrouter". Ignored by the "ragd" runner, which only speaks the OpenAI-compatible protocol.
 ---@field endpoint string Model API endpoint (e.g., http://localhost)
 ---@field api_key string Environment variable name for the model API key.
 ---@field model string Model name
+---@field dimensions? integer Embedding vector width. Required (on the `embed` model) when runner is "ragd", since it fixes the daemon's storage schema.
 ---@field extra? table Additional model provider options.
 
 ---@class avante.Config.RagService
 ---@field enabled boolean Enable the RAG service.
----@field host_mount string? Host path mounted read-only for the RAG service.
----@field runner "docker"|"nix"|string Runner used to launch the RAG service.
+---@field host_mount string? Host path mounted read-only for the RAG service. Ignored by the "ragd" runner (it runs natively on the host, no mount needed).
+---@field runner "ragd"|"docker"|"nix"|string Runner used to launch the RAG service.
+---@field ragd_binary? string Path to the ragd executable when runner is "ragd" (defaults to "ragd", resolved via PATH).
 ---@field image? string Docker image used when runner is `docker`.
 ---@field llm avante.Config.RagServiceModel Language model configuration.
 ---@field embed avante.Config.RagServiceModel Embedding model configuration.
