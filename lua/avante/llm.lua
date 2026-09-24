@@ -22,6 +22,16 @@ local M = {}
 
 M.CANCEL_PATTERN = "AvanteLLMEscape"
 
+-- Number of most-recent history messages to always exclude from automatic
+-- compaction. summarize_memory() picks the newest message in whatever set
+-- it's given as the compaction cutoff, and get_history_messages_for_api()
+-- drops everything up to and including that cutoff. Without this margin,
+-- the cutoff always lands on the newest message in the whole conversation
+-- (since that's what gets passed in), so compaction wipes the entire
+-- visible history -- including the active task -- instead of just the old
+-- part.
+local COMPACTION_KEEP_RECENT_MESSAGES = 10
+
 ------------------------------Prompt and type------------------------------
 
 local group = api.nvim_create_augroup("avante_llm", { clear = true })
@@ -409,7 +419,16 @@ function M.generate_prompts(opts)
         local target_tokens = context_window * 0.9
         local tokens_count = tokens_usage.prompt_tokens + tokens_usage.completion_tokens
         Utils.debug("Tokens count", tokens_count)
-        if tokens_count > target_tokens then pending_compaction_history_messages = opts.history_messages end
+        if tokens_count > target_tokens and opts.history_messages then
+          local compactable_count = #opts.history_messages - COMPACTION_KEEP_RECENT_MESSAGES
+          if compactable_count > 0 then
+            local to_compact = {}
+            for i = 1, compactable_count do
+              to_compact[i] = opts.history_messages[i]
+            end
+            pending_compaction_history_messages = to_compact
+          end
+        end
       end
     end
   end
