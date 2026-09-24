@@ -3048,7 +3048,11 @@ function Sidebar:handle_submit(request)
             stream_options.memory = memory.content
           end
           stream_options.history_messages = self:get_history_messages_for_api()
-          Llm.stream(stream_options)
+          -- Use _stream(), not stream(): this is a continuation of the
+          -- in-flight round, not a new top-level user submission. stream()
+          -- resets the cancellation flag and layers a fresh completion
+          -- guard, which would clobber a cancellation requested mid-loop.
+          Llm._stream(stream_options)
         end
       )
     end
