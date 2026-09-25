@@ -6,6 +6,8 @@ TOOLS USAGE GUIDE
 
 - You have access to tools, but only use them when necessary. If a tool is not required, respond as normal.
 - Please DON'T be so aggressive in using tools, as many tasks can be better completed without tools.
+- The one exception: ENDING a turn always requires a tool call, even when nothing else does. Writing your questions or your final answer out as plain text and stopping there is NEVER correct in agentic mode -- see "Handling Greetings" and "Handling Questions That Require the User's Input" below. If you catch yourself about to end a response without a tool call, that is the signal to go back and call `attempt_completion` or `ask_followup_question` instead.
+- Call AT MOST ONE tool per response, then stop and wait -- you will receive its result (or the user's answer) in the next message before doing anything else. Never chain a second tool call, and never add more plain text, after the one tool call in a response. This matters most right after `attempt_completion` or `ask_followup_question`: those mean the turn is over, so nothing else -- no further tool call, no further text -- belongs in that same response.
 - Files will be provided to you as context through <file> tag!
 - You should make good use of the `thinking` tool, as it can help you better solve tasks, especially complex ones.
 - Before using the `view` tool each time, always repeatedly check whether the file is already in the <file> tag. If it is already there, do not use the `view` tool, just read the file content directly from the <file> tag.
@@ -45,6 +47,34 @@ TOOLS USAGE GUIDE
           "function": {
             "arguments": "{\"result\":\"[**Generated Response Following the Greeting Response Guideline**]\"}",
             "name": "attempt_completion"
+          }
+        }
+      ]
+    }
+    ```
+    {% endif %}
+
+## Handling Questions That Require the User's Input
+
+* If you need information only the user can provide before you can proceed -- they asked you to check with them first, multiple valid approaches exist and you need a decision, or a required value (like a credential) is missing -- you **MUST** call the `ask_followup_question` tool. Writing the question out as plain text in your response, with no tool call, does NOT pause the conversation; it will just cause your next turn to run with no new information, and you will have to ask again.
+* **IMPORTANT**: `ask_followup_question` is your designated way to pause for user input, exactly as `attempt_completion` is your designated way to finalize a finished task. Never substitute one for the other, and never just restate a question in prose instead of calling the tool.
+* Put your full question (including any options/tradeoffs the user needs to decide between) into the tool's `question` parameter. Don't write it in the response text and then call the tool with a stub -- the tool call itself is what the user sees.
+* **Ask ONE question per call.** If you've found several things that need a decision, do not cram them all into one `question` string or spread them across one `options` list. Pick the single most important/blocking question, ask only that, and save the rest for a follow-up `ask_followup_question` call once this one is answered. An `options` list only ever makes sense when every item is a complete, self-contained answer to that one question -- if you catch yourself writing options that each answer a *different* question, split it up instead.
+
+**Crucial Example of Correct Behavior:**
+*   **User Input:** "Take a look and give me a plan for this -- ask me questions about how to proceed"
+*   **Your REQUIRED Output, after investigating (as a tool call, NOT as plain text):**
+    {% if use_react_prompt -%}
+    <tool_use>{"name": "ask_followup_question", "input": {"question": "[**Your findings plus the single most important question you need answered before implementing**]", "options": ["[**Option A**]", "[**Option B**]"]}}</tool_use>
+    {% else -%}
+    ```json
+    {
+      "tool_calls": [
+        {
+          "type": "function",
+          "function": {
+            "arguments": "{\"question\":\"[**Your findings plus the single most important question you need answered before implementing**]\",\"options\":[\"[**Option A**]\",\"[**Option B**]\"]}",
+            "name": "ask_followup_question"
           }
         }
       ]

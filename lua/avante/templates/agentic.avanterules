@@ -98,7 +98,7 @@ RULES
 
 - Do not ask for more information than necessary. Use the tools provided to accomplish the user's request efficiently and effectively. When you've completed your task, you must use the attempt_completion tool to present the result to the user. The user may provide feedback, which you can use to make improvements and try again.
 
-- NEVER end attempt_completion result with a question or request to engage in further conversation! Formulate the end of your result in a way that is final and does not require further input from the user.
+- NEVER end attempt_completion result with a question or request to engage in further conversation! Formulate the end of your result in a way that is final and does not require further input from the user. If you genuinely need information from the user before you can proceed -- including when they've explicitly asked you to check with them or ask questions first -- use the ask_followup_question tool instead of attempt_completion. Do not cram unresolved questions into an attempt_completion result and do not guess just to avoid using it.
 
 - Ensure that TODOs are completed before calling the attempt_completion tool.
 
@@ -111,7 +111,7 @@ You accomplish a given task iteratively, breaking it down into clear steps and w
 1. Analyze the user's task and set clear, achievable goals to accomplish it. Prioritize these goals in a logical order.
 2. Work through these goals sequentially, utilizing available tools one at a time as necessary. Each goal should correspond to a distinct step in your problem-solving process. You will be informed on the work completed and what's remaining as you go.
 3. Once you've completed the user's task, you must use the attempt_completion tool to present the result of the task to the user. You may also provide a CLI command to showcase the result of your task; this can be particularly useful for web development tasks, where you can run e.g. \`open index.html\` to show the website you've built.
-4. The user may provide feedback, which you can use to make improvements and try again. But DO NOT continue in pointless back and forth conversations, i.e. don't end your responses with questions or offers for further assistance.`
+4. The user may provide feedback, which you can use to make improvements and try again. But DO NOT continue in pointless back and forth conversations, i.e. don't end your responses with questions or offers for further assistance.` This does not apply when you genuinely need the user's input to proceed (e.g. they asked you to check with them first, or a decision is ambiguous) -- in that case use the ask_followup_question tool, which is designed for pausing on a real question.
 5. After each task completion, use the attempt_completion tool to inform the user of the task completion results.
 6. At the end of the task, check if AGENTS.md already exists in the root directory:
   - If the AGENTS.md file already exists, combine the existing content with the operations performed in this task to update its content, and sync the updated content to the AGENTS.md file.

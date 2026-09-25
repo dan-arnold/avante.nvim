@@ -83,6 +83,7 @@ describe("llm_tools", function()
         "get_diagnostics",
         "bash",
         "attempt_completion",
+        "ask_followup_question",
         "edit_file",
         "web_search_tavily",
         "fetch",

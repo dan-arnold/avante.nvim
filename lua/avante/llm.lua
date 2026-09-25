@@ -1926,7 +1926,13 @@ function M._stream(opts)
         -- and either runs the remaining tools or kicks off a brand new
         -- M._stream() round that nothing here would ever cancel.
         if LLMToolHelpers.is_cancelled then return dispatch_cancel_message() end
-        if tool_use_index > #tool_uses then
+        local last_processed_tool_use = tool_uses[tool_use_index - 1]
+        local is_stopping_tool_use = last_processed_tool_use
+          and (
+            last_processed_tool_use.name == "attempt_completion"
+            or last_processed_tool_use.name == "ask_followup_question"
+          )
+        if tool_use_index > #tool_uses or is_stopping_tool_use then
           ---@type avante.HistoryMessage[]
           local messages = {}
           for _, tool_result in ipairs(tool_results) do
@@ -1939,8 +1945,10 @@ function M._stream(opts)
             })
           end
           if opts.on_messages_add then opts.on_messages_add(messages) end
-          local the_last_tool_use = tool_uses[#tool_uses]
-          if the_last_tool_use and the_last_tool_use.name == "attempt_completion" then
+          if is_stopping_tool_use then
+            -- attempt_completion / ask_followup_question means the turn is over --
+            -- ignore any further tool_uses the model queued up in the same
+            -- response instead of executing them.
             opts.on_stop({ reason = "complete" })
             return
           end
@@ -2037,20 +2045,28 @@ function M._stream(opts)
       local history_messages = opts.get_history_messages and opts.get_history_messages({ all = true }) or {}
       local pending_tools, pending_tool_use_messages = History.get_pending_tools(history_messages)
       if stop_opts.reason == "complete" and Config.mode == "agentic" then
-        local completed_attempt_completion_tool_use = nil
-        -- Whether the assistant already said something to the user this turn (e.g.
-        -- asked a clarifying question). If so, the turn must end and wait for a real
-        -- reply rather than being auto-nagged into continuing without one: the nag
-        -- message below is a synthetic "user" turn the model can't distinguish from
-        -- genuine input, so auto-continuing past real assistant speech risks the
-        -- model treating its own nagged continuation as tacit user approval.
+        -- Either tool counts as a legitimate way to end the turn:
+        -- attempt_completion means the task is done, ask_followup_question
+        -- means the model is deliberately pausing for input it needs before
+        -- it can continue. Both should stop the auto-continuation nudges
+        -- below -- a question awaiting an answer is not "unfinished work"
+        -- to be reminded about.
+        local completed_stopping_tool_use = nil
+        -- Whether the assistant already said something to the user this turn as
+        -- plain text (e.g. asked a clarifying question without using the tool
+        -- meant for that). If so, the turn must end and wait for a real reply
+        -- rather than being auto-nagged into continuing without one: the nag
+        -- message below is a synthetic "user" turn the model can't distinguish
+        -- from genuine input, so auto-continuing past real assistant speech
+        -- risks the model treating its own nagged continuation as tacit user
+        -- approval.
         local assistant_said_something = false
         for idx = #history_messages, 1, -1 do
           local message = history_messages[idx]
           if message.is_user_submission then break end
           local use = History.Helpers.get_tool_use_data(message)
-          if use and use.name == "attempt_completion" then
-            completed_attempt_completion_tool_use = message
+          if use and (use.name == "attempt_completion" or use.name == "ask_followup_question") then
+            completed_stopping_tool_use = message
             break
           end
           if message.message.role == "assistant" and type(message.message.content) == "string" then
@@ -2067,7 +2083,7 @@ function M._stream(opts)
         end
         local user_reminder_count = opts.session_ctx.user_reminder_count or 0
         if
-          not completed_attempt_completion_tool_use
+          not completed_stopping_tool_use
           and not assistant_said_something
           and opts.on_messages_add
           and (user_reminder_count < 3 or #unfinished_todos > 0)
@@ -2086,7 +2102,7 @@ function M._stream(opts)
           else
             message = History.Message:new(
               "user",
-              "<system-reminder>You should use tool calls to answer the question, for example, use attempt_completion if the job is done.</system-reminder>",
+              "<system-reminder>ERROR: your last response ended without a tool call. Text alone never ends a turn in agentic mode, so this conversation is still running and no one is reading what you just wrote as final. You must respond with EXACTLY ONE tool call now: call `attempt_completion` if the job is done, or call `ask_followup_question` if you are waiting on the user (put your single most important question in its `question` parameter -- do not write it out as plain text again, and do not bundle multiple questions into one call).</system-reminder>",
               {
                 visible = false,
               }
